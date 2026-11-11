@@ -1,0 +1,214 @@
+# Ambiente local do pipeline ANS Lakehouse (Arquitetura Medalhão)
+#
+#   Airflow 3.3 (LocalExecutor)  -> orquestração          http://localhost:8080
+#   RustFS (S3 compatível)       -> Landing, Bronze, Silver http://localhost:9001 (console)
+#   PostgreSQL 16 (ans_dw)       -> Gold (Star Schema)     localhost:5433
+#
+# Todas as variáveis têm valor padrão; o arquivo .env é opcional (veja .env.example).
+# Uso: docker compose up -d --build
+
+name: ans-lakehouse
+
+x-pipeline-env: &pipeline-env
+  # Object Storage (RustFS, API S3)
+  S3_ENDPOINT_URL: http://rustfs:9000
+  S3_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+  S3_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin123}
+  S3_REGION: us-east-1
+  LANDING_BUCKET: landing
+  BRONZE_BUCKET: bronze
+  SILVER_BUCKET: silver
+  # Data Warehouse (camada Gold)
+  DW_HOST: dw-postgres
+  DW_PORT: "5432"
+  DW_DB: ${DW_DB:-ans_dw}
+  DW_USER: ${DW_USER:-dw}
+  DW_PASSWORD: ${DW_PASSWORD:-dw}
+  # Spark em modo local dentro da task: memória do driver e núcleos (cabe no Docker Desktop com 8 GB)
+  SPARK_DRIVER_MEMORY: ${SPARK_DRIVER_MEMORY:-2g}
+  SPARK_CORES: ${SPARK_CORES:-4}
+  ANS_BASE_URL: ${ANS_BASE_URL:-https://dadosabertos.ans.gov.br/FTP/PDA}
+  # Retenção: competências de beneficiários e trimestres do DIOPS mantidos nas três camadas
+  ANS_MESES_RETENCAO: ${ANS_MESES_RETENCAO:-3}
+  ANS_TRIMESTRES_RETENCAO: ${ANS_TRIMESTRES_RETENCAO:-1}
+
+x-airflow-common: &airflow-common
+  build: .
+  image: ans-lakehouse/airflow:3.3.2
+  environment: &airflow-common-env
+    <<: *pipeline-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db/airflow
+    AIRFLOW__CORE__FERNET_KEY: ""
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__PARALLELISM: "8"
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:-ans-lakehouse-local-jwt-secret}
+    AIRFLOW__API_AUTH__JWT_ISSUER: airflow
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "30"
+    # Conexão usada pelo SQLExecuteQueryOperator (DDL da camada Gold)
+    AIRFLOW_CONN_ANS_DW: postgresql://${DW_USER:-dw}:${DW_PASSWORD:-dw}@dw-postgres:5432/${DW_DB:-ans_dw}
+    # Pacote de processamento (src/ans_pipeline) importável pelas DAGs e tasks
+    PYTHONPATH: /opt/airflow/src
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./src:/opt/airflow/src
+    - ./sql:/opt/airflow/sql
+    - ./tests:/opt/airflow/tests
+    - ./dbt:/opt/airflow/dbt
+    - airflow-logs:/opt/airflow/logs
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on: &airflow-common-depends-on
+    airflow-db:
+      condition: service_healthy
+    dw-postgres:
+      condition: service_healthy
+    rustfs:
+      condition: service_healthy
+
+services:
+  # ---------------------------------------------------------------- Object Storage
+  rustfs:
+    image: rustfs/rustfs:1.0.4
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin123}
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+      RUSTFS_CONSOLE_ENABLE: "true"
+    ports:
+      - "9000:9000"   # API S3
+      - "9001:9001"   # Console web
+    volumes:
+      - rustfs-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------- Data Warehouse (Gold)
+  dw-postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${DW_USER:-dw}
+      POSTGRES_PASSWORD: ${DW_PASSWORD:-dw}
+      POSTGRES_DB: ${DW_DB:-ans_dw}
+    ports:
+      - "5433:5432"
+    volumes:
+      - dw-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------- Airflow
+  airflow-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /opt/airflow/logs
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/logs
+        /entrypoint airflow version
+        # pools das DAGs (Spark e downloads): dags/config/pools.json
+        exec airflow pools import /opt/airflow/dags/config/pools.json
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-airflow}
+    user: "0:0"
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+volumes:
+  rustfs-data:
+  dw-data:
+  airflow-db-data:
+  airflow-logs:

@@ -1,0 +1,12 @@
+{
+  "spark": {
+    "slots": 1,
+    "description": "Jobs PySpark (Bronze, Silver e publicação da Gold), somando todas as DAGs. 1 cabe no Docker Desktop com 8 GB; aumente com mais memória ou mais workers.",
+    "include_deferred": false
+  },
+  "ans_download": {
+    "slots": 4,
+    "description": "Downloads simultâneos no portal de dados abertos da ANS.",
+    "include_deferred": false
+  }
+}

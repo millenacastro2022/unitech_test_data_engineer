@@ -1,0 +1,161 @@
+version: 2
+
+# Contrato da camada Gold: tipos, chaves primárias e estrangeiras são criados no PostgreSQL
+# (contract.enforced) e as regras de negócio viram testes do dbt.
+
+models:
+  - name: dm_calendario
+    description: "Dimensão de datas (diária, 2000 a 2035). Fatos mensais usam o 1º dia do mês; trimestrais, o 1º dia do trimestre."
+    constraints:
+      - type: primary_key
+        columns: [sk_data]
+    columns:
+      - {name: sk_data, data_type: integer, description: "AAAAMMDD", constraints: [{type: not_null}]}
+      - {name: dt_data, data_type: date, constraints: [{type: not_null}, {type: unique}]}
+      - {name: nr_ano, data_type: smallint}
+      - {name: nr_semestre, data_type: smallint}
+      - {name: nr_trimestre, data_type: smallint}
+      - {name: nr_mes, data_type: smallint}
+      - {name: nr_dia, data_type: smallint}
+      - {name: nm_mes, data_type: varchar(10)}
+      - {name: nm_mes_abrev, data_type: char(3)}
+      - {name: cd_ano_mes, data_type: char(7), description: "2026-09"}
+      - {name: cd_ano_trimestre, data_type: char(7), description: "2026-T2"}
+      - {name: nr_dia_semana, data_type: smallint, description: "1 = segunda ... 7 = domingo"}
+      - {name: nm_dia_semana, data_type: varchar(13)}
+      - {name: fl_fim_de_semana, data_type: boolean}
+      - {name: fl_ultimo_dia_mes, data_type: boolean}
+      - {name: dt_primeiro_dia_mes, data_type: date}
+      - {name: dt_primeiro_dia_trimestre, data_type: date}
+
+  - name: dm_uf
+    description: "Unidades da Federação; XX = UF não identificada pela ANS."
+    constraints:
+      - type: primary_key
+        columns: [sg_uf]
+    columns:
+      - {name: sg_uf, data_type: char(2), constraints: [{type: not_null}]}
+      - {name: nm_uf, data_type: varchar(40), constraints: [{type: not_null}]}
+      - {name: nm_regiao, data_type: varchar(20), constraints: [{type: not_null}]}
+
+  - name: dm_operadora
+    description: >
+      Operadoras (SCD tipo 1). Operadoras fora do cadastro de ativas (CADOP) presentes no SIB ou no
+      DIOPS entram como membros inferidos (fl_ativa = false); sk = -1 é a operadora não identificada.
+    constraints:
+      - type: primary_key
+        columns: [sk_operadora]
+    columns:
+      - {name: sk_operadora, data_type: integer, description: "Chave substituta; nunca muda depois de criada", constraints: [{type: not_null}]}
+      - {name: cd_operadora, data_type: varchar(6), description: "Chave natural (registro ANS, 6 dígitos)", constraints: [{type: not_null}, {type: unique}]}
+      - {name: nr_cnpj, data_type: varchar(14)}
+      - {name: nm_razao_social, data_type: varchar(300), constraints: [{type: not_null}]}
+      - {name: nm_fantasia, data_type: varchar(300)}
+      - {name: ds_modalidade, data_type: varchar(60), constraints: [{type: not_null}]}
+      - {name: sg_uf_sede, data_type: char(2)}
+      - {name: nm_cidade_sede, data_type: varchar(100)}
+      - {name: cd_regiao_comercializacao, data_type: smallint}
+      - {name: dt_registro_ans, data_type: date}
+      - {name: fl_ativa, data_type: boolean, description: "Consta no cadastro de operadoras ativas (CADOP)", constraints: [{type: not_null}]}
+      - name: tp_origem
+        data_type: varchar(10)
+        description: "CADOP | SIB | DIOPS (membro inferido) | N/A"
+        constraints: [{type: not_null}]
+        data_tests:
+          - accepted_values:
+              arguments: {values: ['CADOP', 'SIB', 'DIOPS', 'N/A']}
+      - {name: dh_atualizacao, data_type: timestamptz, constraints: [{type: not_null}]}
+
+  - name: dm_produto
+    description: >
+      Produtos/planos (SCD tipo 1), chave natural (registro_ans, cd_plano). Planos citados no SIB e
+      ausentes da base pda-008 entram como membros inferidos; sk = -1 é o plano não identificado.
+    constraints:
+      - type: primary_key
+        columns: [sk_produto]
+      - type: unique
+        columns: [cd_operadora, cd_plano]
+    columns:
+      - {name: sk_produto, data_type: integer, constraints: [{type: not_null}]}
+      - {name: cd_operadora, data_type: varchar(6), constraints: [{type: not_null}]}
+      - {name: cd_plano, data_type: varchar(30), constraints: [{type: not_null}]}
+      - {name: id_plano, data_type: bigint}
+      - {name: nm_plano, data_type: varchar(300), constraints: [{type: not_null}]}
+      - {name: tp_vigencia_plano, data_type: char(1), description: "A = anterior à Lei 9.656/98, P = posterior"}
+      - {name: ds_contratacao, data_type: varchar(80)}
+      - {name: ds_grupo_contratacao, data_type: varchar(80)}
+      - {name: ds_segmentacao_assistencial, data_type: varchar(120)}
+      - {name: ds_grupo_segmentacao_assistencial, data_type: varchar(80)}
+      - {name: ds_cobertura, data_type: varchar(40)}
+      - {name: fl_odontologico, data_type: boolean}
+      - {name: ds_obstetricia, data_type: varchar(40)}
+      - {name: ds_abrangencia_cobertura, data_type: varchar(60)}
+      - {name: tp_financiamento, data_type: varchar(40)}
+      - {name: ds_fator_moderador, data_type: varchar(60)}
+      - {name: ds_acomodacao_hospitalar, data_type: varchar(40)}
+      - {name: ds_livre_escolha, data_type: varchar(40)}
+      - {name: ds_porte_operadora, data_type: varchar(20)}
+      - {name: ds_situacao_plano, data_type: varchar(30)}
+      - {name: dt_situacao, data_type: date}
+      - {name: dt_registro_plano, data_type: date}
+      - name: tp_origem
+        data_type: varchar(10)
+        description: "PDA-008 | SIB (membro inferido) | N/A"
+        constraints: [{type: not_null}]
+        data_tests:
+          - accepted_values:
+              arguments: {values: ['PDA-008', 'SIB', 'N/A']}
+      - {name: dh_atualizacao, data_type: timestamptz, constraints: [{type: not_null}]}
+
+  - name: dm_conta_contabil
+    description: "Plano de contas padrão ANS até o 4º nível. Receita assistencial = conta 31; despesa assistencial = conta 41."
+    constraints:
+      - type: primary_key
+        columns: [cd_conta]
+    columns:
+      - {name: cd_conta, data_type: varchar(20), constraints: [{type: not_null}]}
+      - {name: ds_conta, data_type: varchar(300), constraints: [{type: not_null}]}
+      - {name: nr_nivel, data_type: smallint, description: "Nº de dígitos do código", constraints: [{type: not_null}]}
+      - {name: cd_classe, data_type: char(1), constraints: [{type: not_null}]}
+      - {name: ds_classe, data_type: varchar(30), constraints: [{type: not_null}]}
+      - {name: cd_grupo, data_type: varchar(2), constraints: [{type: not_null}]}
+      - {name: dh_atualizacao, data_type: timestamptz, constraints: [{type: not_null}]}
+
+  - name: ft_beneficiarios
+    description: "Beneficiários por competência (fonte: pda-024 / SIB). Recarga idempotente por competência."
+    constraints:
+      - type: primary_key
+        columns: [sk_competencia, sk_operadora, sk_produto, sg_uf, ds_cobertura_assistencial, ds_contratacao]
+      - {type: foreign_key, columns: [sk_competencia], to: "ref('dm_calendario')", to_columns: [sk_data]}
+      - {type: foreign_key, columns: [sk_operadora], to: "ref('dm_operadora')", to_columns: [sk_operadora]}
+      - {type: foreign_key, columns: [sk_produto], to: "ref('dm_produto')", to_columns: [sk_produto]}
+      - {type: foreign_key, columns: [sg_uf], to: "ref('dm_uf')", to_columns: [sg_uf]}
+    columns:
+      - {name: sk_competencia, data_type: integer, description: "1º dia do mês (AAAAMM01)", constraints: [{type: not_null}]}
+      - {name: sk_operadora, data_type: integer, constraints: [{type: not_null}]}
+      - {name: sk_produto, data_type: integer, constraints: [{type: not_null}]}
+      - {name: sg_uf, data_type: char(2), constraints: [{type: not_null}]}
+      - {name: ds_cobertura_assistencial, data_type: varchar(40), description: "Médico-hospitalar | Odontológico", constraints: [{type: not_null}]}
+      - {name: ds_contratacao, data_type: varchar(80), constraints: [{type: not_null}]}
+      - {name: qt_beneficiario_ativo, data_type: bigint, constraints: [{type: not_null}]}
+      - {name: qt_beneficiario_aderido, data_type: bigint, constraints: [{type: not_null}]}
+      - {name: qt_beneficiario_cancelado, data_type: bigint, constraints: [{type: not_null}]}
+      - {name: dt_carga_fonte, data_type: date}
+      - {name: dh_carga_dw, data_type: timestamptz, constraints: [{type: not_null}]}
+
+  - name: ft_financeiro
+    description: "Demonstrações contábeis trimestrais (DIOPS). Recarga idempotente por trimestre."
+    constraints:
+      - type: primary_key
+        columns: [sk_trimestre, sk_operadora, cd_conta]
+      - {type: foreign_key, columns: [sk_trimestre], to: "ref('dm_calendario')", to_columns: [sk_data]}
+      - {type: foreign_key, columns: [sk_operadora], to: "ref('dm_operadora')", to_columns: [sk_operadora]}
+      - {type: foreign_key, columns: [cd_conta], to: "ref('dm_conta_contabil')", to_columns: [cd_conta]}
+    columns:
+      - {name: sk_trimestre, data_type: integer, description: "1º dia do trimestre (AAAAMMDD)", constraints: [{type: not_null}]}
+      - {name: sk_operadora, data_type: integer, constraints: [{type: not_null}]}
+      - {name: cd_conta, data_type: varchar(20), constraints: [{type: not_null}]}
+      - {name: vl_saldo_inicial, data_type: "numeric(20,2)", description: "Acumulado até o trimestre anterior (contas de resultado)", constraints: [{type: not_null}]}
+      - {name: vl_saldo_final, data_type: "numeric(20,2)", description: "Acumulado no ano até o fim do trimestre", constraints: [{type: not_null}]}
+      - {name: vl_movimento_trimestre, data_type: "numeric(20,2)", description: "Valor do próprio trimestre = final - inicial", constraints: [{type: not_null}]}
+      - {name: dh_carga_dw, data_type: timestamptz, constraints: [{type: not_null}]}
