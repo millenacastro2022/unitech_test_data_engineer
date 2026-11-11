@@ -1,0 +1,38 @@
+version: 2
+
+sources:
+  - name: silver
+    schema: silver
+    description: >
+      Silver publicada no PostgreSQL pelo Spark (dag_gold_ans.publish_silver): a parte da Silver
+      que a Gold consome. A Silver completa, com o detalhe por município, sexo e faixa etária,
+      fica em Parquet no RustFS. Cada execução substitui só o período que mudou.
+    tables:
+      - name: tb_operadoras
+        description: "Snapshot mais recente do cadastro de operadoras ativas (CADOP)."
+        columns:
+          - name: cd_operadora
+            data_tests: [not_null, unique]
+      - name: tb_produtos
+        description: "Snapshot mais recente das características dos produtos (pda-008)."
+        columns:
+          - name: cd_operadora
+            data_tests: [not_null]
+          - name: cd_plano
+            data_tests: [not_null]
+      - name: tb_beneficiarios
+        description: "Beneficiários somados por competência x operadora x plano x UF x cobertura x contratação."
+        columns:
+          - name: dt_competencia
+            data_tests: [not_null]
+          - name: cd_operadora
+            data_tests: [not_null]
+      - name: tb_financeiro
+        description: "DIOPS por trimestre, operadora e conta, até o 4º nível do plano de contas."
+        columns:
+          - name: dt_trimestre
+            data_tests: [not_null]
+          - name: cd_operadora
+            data_tests: [not_null]
+          - name: cd_conta_contabil
+            data_tests: [not_null]

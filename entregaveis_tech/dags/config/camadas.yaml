@@ -1,0 +1,100 @@
+# DAGs da ANS geradas por configuração: uma entrada por camada, na ordem do fluxo.
+# A fábrica (dags/fabrica_dags) lê este arquivo no parse e monta uma DAG por camada.
+#
+# Escalar sem mexer no código:
+#   - fonte nova da ANS ........ acrescente em `grupos` (e no pacote ans_pipeline)
+#   - mais jobs Spark juntos ... aumente os slots do pool `spark` (config/pools.json)
+#   - mais downloads juntos .... aumente os slots do pool `ans_download`
+#   - mais tarefas por DAG ..... `max_tarefas_ativas`
+padrao:
+  fuso: America/Sao_Paulo
+  inicio: 2026-01-01
+  max_execucoes_ativas: 1        # uma execução por vez: o processamento lê e grava o controle
+  max_tarefas_ativas: 8
+  tentativas: 3
+  espera_tentativa_min: 5        # 5, 10, 20 min... (multiplicada a cada tentativa, até o máximo)
+  multiplicador_espera: 2
+  espera_tentativa_max_min: 30
+  tags: [ans]
+
+camadas:
+  - camada: landing
+    dag_id: dag_landing_ans
+    horario: "0 1 * * *"
+    titulo: "Landing: dados abertos da ANS → s3://landing"
+    descricao: >-
+      Consulta a ANS e baixa só os arquivos novos ou republicados dentro da janela de retenção
+      (3 competências de beneficiários, um ZIP por UF; o trimestre mais recente do DIOPS; os
+      snapshots de operadoras e produtos). Cada arquivo é gravado como veio em
+      `s3://landing/<fonte>/ingestion_date=AAAA-MM-DD/` e registrado em `controle.tb_arquivo_landing`.
+    grupos: [operadoras, produtos, beneficiarios, financeiro]
+    listar:
+      tarefa: list_new_files
+      descricao: HEAD em cada arquivo da fonte na ANS; devolve o que é novo ou mudou e está na janela.
+    processar:
+      tarefa: download_file
+      descricao: Um por arquivo; download em streaming com SHA-256, gravação na Landing e registro no controle.
+      pool: ans_download
+      limite_min: 60
+    params:
+      ufs: UFs de beneficiários. XX = UF não identificada.
+
+  - camada: bronze
+    dag_id: dag_bronze_ans
+    horario: "0 3 * * *"
+    titulo: "Bronze: Landing → tabelas Parquet em s3://bronze (PySpark)"
+    descricao: >-
+      Converte em Parquet cada arquivo da Landing ainda não convertido: o dado como veio da ANS,
+      colunas como texto, mais as colunas de controle. Só o layout é conferido. Cada partição é
+      registrada em `controle.tb_particao_bronze`.
+    espera_anterior: {verificar_a_cada_min: 5, limite_min: 120}
+    grupos: [operadoras, produtos, beneficiarios, financeiro]
+    listar:
+      tarefa: list_pending
+      descricao: Arquivo mais recente de cada partição da fonte que a Bronze ainda não converteu, em lotes por período.
+    processar:
+      tarefa: load_batch
+      descricao: Um job PySpark por lote; ZIP/CSV da Landing → Parquet na Bronze, cada partição registrada ao terminar.
+      pool: spark
+      limite_min: 120
+    params:
+      reprocessar: Converte de novo a versão mais recente de todos os arquivos da Landing.
+
+  - camada: silver
+    dag_id: dag_silver_ans
+    horario: "0 5 * * *"
+    titulo: "Silver: Bronze → Parquet tratado em s3://silver (PySpark)"
+    descricao: >-
+      Trata cada partição da Bronze ainda não processada: tipagem, nomes padronizados, deduplicação,
+      nulos e inválidos tratados, linhas rejeitadas em quarentena. Cada partição é registrada em
+      `controle.tb_particao_silver`.
+    espera_anterior: {verificar_a_cada_min: 5, limite_min: 120}
+    grupos: [operadoras, produtos, beneficiarios, financeiro]
+    listar:
+      tarefa: list_pending
+      descricao: Partições da Bronze da entidade cuja versão atual a Silver ainda não processou, em lotes por período.
+    processar:
+      tarefa: process_batch
+      descricao: Um job PySpark por lote; Bronze → regras de limpeza e qualidade → Silver, cada partição registrada ao terminar.
+      pool: spark
+      limite_min: 120
+    params:
+      reprocessar: Refaz a versão mais recente de todas as partições, mesmo já processadas.
+
+  - camada: gold
+    dag_id: dag_gold_ans
+    horario: "0 7 * * *"
+    titulo: "Gold: Silver → Star Schema no PostgreSQL (PySpark + dbt)"
+    descricao: >-
+      Confere que tudo o que entrou na Landing passou pela Bronze e pela Silver; publica no schema
+      silver do PostgreSQL o que mudou, o dbt monta dimensões e fatos e roda os testes, cada carga é
+      conferida contra a Silver e, por fim, sai das quatro camadas o que deixou a janela de retenção.
+    espera_anterior: {verificar_a_cada_min: 5, limite_min: 120}
+    etapas:
+      validate_silver_complete: {}
+      publish_silver: {pool: spark, limite_min: 60}
+      dbt_build: {limite_min: 60}
+      validate_gold: {}
+      apply_retention: {}
+    params:
+      reprocessar: Recarrega todas as dimensões, competências e trimestres da Silver.

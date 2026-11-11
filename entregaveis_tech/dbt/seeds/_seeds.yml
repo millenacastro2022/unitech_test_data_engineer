@@ -1,0 +1,6 @@
+version: 2
+seeds:
+  - name: tb_ufs
+    description: "As 27 UFs e XX, a UF não identificada pela ANS, com nome e região."
+    config:
+      column_types: {sg_uf: char(2), nm_uf: varchar(40), nm_regiao: varchar(20)}

@@ -1,0 +1,27 @@
+# Camada Gold: Star Schema no PostgreSQL, modelado com dbt a partir da Silver publicada pelo Spark (schema silver).
+name: ans_gold
+version: "1.0.0"
+config-version: 2
+profile: ans_dw
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+
+flags:
+  send_anonymous_usage_stats: false
+
+models:
+  ans_gold:
+    +persist_docs: {relation: true, columns: true}   # descrições viram COMMENT ON no PostgreSQL
+    gold:
+      +schema: gold
+      +materialized: incremental
+      +on_schema_change: fail
+      +full_refresh: false        # a Gold guarda as competências já carregadas; nunca recriar do zero
+      +contract: {enforced: true} # tipos, chaves primárias e estrangeiras da Gold
+
+seeds:
+  ans_gold:
+    +schema: referencia

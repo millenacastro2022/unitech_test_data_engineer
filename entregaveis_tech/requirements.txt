@@ -1,0 +1,9 @@
+# Dependências adicionais instaladas sobre a imagem oficial apache/airflow:3.3.2.
+# boto3, requests, psycopg2 e os providers common-sql/postgres/amazon já fazem parte
+# da imagem oficial; são listados aqui apenas para documentar o que o projeto usa.
+# O dbt fica num virtualenv separado (veja o Dockerfile).
+pyspark==4.0.5
+boto3
+requests
+psycopg2-binary
+pytest==8.4.2

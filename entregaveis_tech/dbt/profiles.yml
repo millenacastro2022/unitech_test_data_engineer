@@ -1,0 +1,13 @@
+# Conexão com o Data Warehouse; as variáveis vêm do docker-compose (mesmas do pipeline).
+ans_dw:
+  target: dw
+  outputs:
+    dw:
+      type: postgres
+      host: "{{ env_var('DW_HOST', 'localhost') }}"
+      port: "{{ env_var('DW_PORT', '5433') | as_number }}"
+      user: "{{ env_var('DW_USER', 'dw') }}"
+      password: "{{ env_var('DW_PASSWORD', 'dw') }}"
+      dbname: "{{ env_var('DW_DB', 'ans_dw') }}"
+      schema: gold
+      threads: 4
